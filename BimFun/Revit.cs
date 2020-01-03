@@ -18,6 +18,9 @@ using System.Threading.Tasks;
 
 namespace BimFun
 {
+    /// <summary>
+    /// For Revit
+    /// </summary>
     public static class BimFun_Revit
     {
         /// <summary>
@@ -44,7 +47,7 @@ namespace BimFun
             {
                 throw new ArgumentException(nameof(type));
             }
-           
+
             foreach (var name in newNames)
             {
                 var newType = ((ElementType)type.InternalElement).Duplicate(name) as FamilySymbol;
@@ -77,6 +80,17 @@ namespace BimFun
                 }
             }
             return results;
+        }
+
+        /// <summary>
+        /// 将明细表导出至Excel
+        /// </summary>
+        /// <param name="schedule"></param>
+        /// <param name="directory"></param>
+        /// <returns></returns>
+        public static bool ExportScheduleToExcel(ScheduleView schedule, string directory)
+        {
+            return Utils.Write2Excel((ViewSchedule)schedule.InternalElement, directory);
         }
     }
 }
