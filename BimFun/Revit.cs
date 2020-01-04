@@ -81,7 +81,6 @@ namespace BimFun
             }
             return results;
         }
-
         /// <summary>
         /// 将明细表导出至Excel
         /// </summary>
@@ -91,6 +90,46 @@ namespace BimFun
         public static bool ExportScheduleToExcel(ScheduleView schedule, string directory)
         {
             return Utils.Write2Excel((ViewSchedule)schedule.InternalElement, directory);
+        }
+        /// <summary>
+        /// 切换图元连接顺序
+        /// </summary>
+        /// <param name="elements"></param>
+        /// <param name="others"></param>
+        public static void SwitchElementsOrder(IEnumerable<Revit.Elements.Element> elements, IEnumerable<Revit.Elements.Element> others)
+        {
+            if (!elements.Any()) throw new ArgumentNullException(nameof(elements));
+            if (!others.Any()) throw new ArgumentNullException(nameof(others));
+            TransactionManager.Instance.EnsureInTransaction(doc);
+            try
+            {
+                foreach (var elem in elements)
+                {
+                    foreach (var elem1 in others)
+                    {
+                        if (JoinGeometryUtils.AreElementsJoined(doc, elem.InternalElement, elem1.InternalElement))
+                        {
+                            JoinGeometryUtils.SwitchJoinOrder(doc, elem.InternalElement, elem1.InternalElement);
+                        }
+                    }
+                }
+            }
+            catch (Exception e)
+            {
+                throw new Exception(e.Message);
+            }
+        }
+
+        /// <summary>
+        /// 获取revit中指定类型的族
+        /// </summary>
+        /// <param name="category">指定类别</param>
+        /// <returns></returns>
+        public static List<Revit.Elements.FamilyType> GetFamilyTypes(Revit.Elements.Category category)
+        {
+            return new FilteredElementCollector(doc).OfClass(typeof(FamilySymbol)).OfCategoryId(new ElementId(category.Id)).Cast<FamilySymbol>()
+                  .ToList().OrderBy(x => x.Name, new FileComparer()).ToList().ConvertAll(x => ElementWrapper.Wrap(x as FamilySymbol, false));
+
         }
     }
 }
