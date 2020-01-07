@@ -16,6 +16,7 @@ using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 using Autodesk.Revit.DB.Structure;
+using Autodesk.Revit.DB.Mechanical;
 
 namespace BimFun
 {
@@ -28,7 +29,6 @@ namespace BimFun
         /// Current document
         /// </summary>
         public static Document doc = Utils.GetDocument();
-
         /// <summary>
         /// 复制族类型
         /// </summary>
@@ -164,9 +164,26 @@ namespace BimFun
             XYZ point = new XYZ(x, y, z);
             FamilySymbol familySymbol = (FamilySymbol)familyType.InternalElement;
             if (!familySymbol.IsActive) familySymbol.Activate();
-            Autodesk.Revit.DB.FamilyInstance familyInstance = doc.Create.NewFamilyInstance(point, familySymbol,(Autodesk.Revit.DB.Level)level.InternalElement, 
+            Autodesk.Revit.DB.FamilyInstance familyInstance = doc.Create.NewFamilyInstance(point, familySymbol, (Autodesk.Revit.DB.Level)level.InternalElement,
                 Autodesk.Revit.DB.Structure.StructuralType.NonStructural);
             return familyInstance.ToDSType(true) as Revit.Elements.FamilyInstance;
         }
+        /// <summary>
+        /// 通过标高和直线创建风管
+        /// </summary>
+        /// <param name="systemType">系统类型</param>
+        /// <param name="ductType">风管类型</param>
+        /// <param name="level">标高</param>
+        /// <param name="line">直线</param>
+        /// <returns></returns>
+        public static Revit.Elements.Element DuctByLineAndLevel(Revit.Elements.FamilyType systemType, Revit.Elements.FamilyType ductType, Revit.Elements.Level level, Autodesk.DesignScript.Geometry.Line line)
+        {
+            TransactionManager.Instance.EnsureInTransaction(doc);
+            XYZ startPoint = line.StartPoint.ToRevitType();
+            XYZ endPoint = line.EndPoint.ToRevitType();
+            Duct duct = Duct.Create(doc, new ElementId(systemType.Id), new ElementId(ductType.Id), new ElementId(level.Id), startPoint, endPoint);
+            return ElementWrapper.ToDSType(duct,true);
+        }
+
     }
 }
