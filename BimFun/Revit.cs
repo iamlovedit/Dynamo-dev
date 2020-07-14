@@ -15,8 +15,8 @@ using System.IO;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
-using Autodesk.Revit.DB.Structure;
 using Autodesk.Revit.DB.Mechanical;
+using System.Diagnostics;
 
 namespace BimFun
 {
@@ -28,7 +28,11 @@ namespace BimFun
         /// <summary>
         /// Current document
         /// </summary>
-        public static Document doc = Utils.GetDocument();
+        private static readonly Document doc;
+        static BimFun_Revit()
+        {
+            doc = Utils.GetDocument();
+        }
         /// <summary>
         /// 复制族类型
         /// </summary>
@@ -128,7 +132,7 @@ namespace BimFun
         public static List<Revit.Elements.FamilyType> GetFamilyTypes(Revit.Elements.Category category)
         {
             return new FilteredElementCollector(doc).OfClass(typeof(FamilySymbol)).OfCategoryId(new ElementId(category.Id)).Cast<FamilySymbol>()
-                  .ToList().OrderBy(x => x.Name, new FileComparer()).ToList().ConvertAll(x => ElementWrapper.Wrap(x as FamilySymbol, false));
+                  .ToList().OrderBy(x => x.Name, new FileComparer()).Select(x => ElementWrapper.Wrap(x, false)).ToList();
 
         }
 
@@ -182,8 +186,109 @@ namespace BimFun
             XYZ startPoint = line.StartPoint.ToRevitType();
             XYZ endPoint = line.EndPoint.ToRevitType();
             Duct duct = Duct.Create(doc, new ElementId(systemType.Id), new ElementId(ductType.Id), new ElementId(level.Id), startPoint, endPoint);
-            return ElementWrapper.ToDSType(duct,true);
+            return ElementWrapper.ToDSType(duct, true);
         }
+        /// <summary>
+        /// 将Geometry导入Revit文档中
+        /// </summary>
+        /// <param name="solids">Solids</param>
+        /// <param name="familyName">族名称</param>
+        /// <param name="templatePath">族样板路径</param>
+        /// <param name="categoryName">族类别名称</param>
+        /// <returns></returns>
+        public static Revit.Elements.FamilyInstance NewInstance(IEnumerable<Autodesk.DesignScript.Geometry.Solid> solids, string familyName, string templatePath, string categoryName)
+        {
+            string[] m_availableViews = { "ThreeD", "FloorPlan", "EngineeringPlan", "CeilingPlan", "Elevation", "Section" };
+            try
+            {
+                XYZ m_point = XYZ.Zero;
+                SATImportOptions m_importOptions = new SATImportOptions
+                {
+                    Placement = ImportPlacement.Origin,
+                    Unit = ImportUnit.Foot,
+                };
+                DisplayUnitType m_units = doc.GetUnits().GetFormatOptions(UnitType.UT_Length).DisplayUnits;
+                double m_factor = UnitUtils.ConvertFromInternalUnits(1, m_units);
+                Geometry m_refGeo = solids.FirstOrDefault();
+                IEnumerable<Geometry> m_results = m_factor != 1 ? solids.Select(g => g.Scale(m_factor)) : solids;
 
+                Vector m_vector = Vector.ByTwoPoints(m_refGeo.BoundingBox.MinPoint, m_refGeo.BoundingBox.MaxPoint);
+                IEnumerable<Geometry> m_tranlatedGeos = m_results.Select(g => g.Translate(m_vector));
+                Autodesk.Revit.ApplicationServices.Application m_app = doc.Application;
+                Document m_familyDoc = m_app.NewFamilyDocument(templatePath);
+                //先将geometry导出位sat 然后再递归找出solid
+                string m_tempSat = Path.Combine(Path.GetTempPath(), $"{familyName}.sat");
+
+                string m_sat = Geometry.ExportToSAT(m_tranlatedGeos, m_tempSat);
+                Autodesk.Revit.DB.View m_targetView = new FilteredElementCollector(m_familyDoc).OfClass(typeof(Autodesk.Revit.DB.View)).OfType<Autodesk.Revit.DB.View>()
+                      .Where(v => IsAcceptable(v)).FirstOrDefault();
+                TransactionManager m_trans = TransactionManager.Instance;
+                m_trans.EnsureInTransaction(m_familyDoc);
+                ElementId m_satId = m_familyDoc.Import(m_sat, m_importOptions, m_targetView);
+                Autodesk.Revit.DB.Element m_satElement = m_familyDoc.GetElement(m_satId);
+                Autodesk.Revit.DB.Solid m_solid = GetSolid(m_satElement.get_Geometry(new Options() { DetailLevel = ViewDetailLevel.Fine, ComputeReferences = true }));
+                m_familyDoc.Delete(m_satId);
+
+                Autodesk.Revit.DB.Category m_familyCategory = m_familyDoc.Settings.Categories.get_Item(categoryName);
+                m_familyDoc.OwnerFamily.FamilyCategory = m_familyCategory;
+
+                FreeFormElement m_form = FreeFormElement.Create(m_familyDoc, m_solid);
+                m_trans.ForceCloseTransaction();
+                string m_tempRfa = Path.Combine(Path.GetTempPath(), $"{familyName}.rfa");
+                m_familyDoc.SaveAs(m_tempRfa, new SaveAsOptions() { OverwriteExistingFile = true });
+
+                Autodesk.Revit.DB.Family m_loadedFamily = m_familyDoc.LoadFamily(doc, new FamilyLoadOptions());
+                m_familyDoc.Close(false);
+                if (File.Exists(m_tempRfa))
+                {
+                    File.Delete(m_tempRfa);
+                }
+                FamilySymbol m_symbol = m_loadedFamily.GetFamilySymbolIds().Select(doc.GetElement).OfType<FamilySymbol>().FirstOrDefault();
+                m_trans.EnsureInTransaction(doc);
+                if (!m_symbol.IsActive)
+                {
+                    m_symbol.Activate();
+                }
+                Autodesk.Revit.DB.FamilyInstance m_instance = doc.Create.NewFamilyInstance(m_point, m_symbol, Autodesk.Revit.DB.Structure.StructuralType.NonStructural);
+                ElementTransformUtils.MoveElement(doc, m_instance.Id, m_vector.ToRevitType());
+                m_trans.TransactionTaskDone();
+                return m_instance.ToDSType(false) as Revit.Elements.FamilyInstance;
+            }
+            catch (Exception e)
+            {
+                Trace.WriteLine(e.Message);
+                return null;
+            }
+
+
+            bool IsAcceptable(Autodesk.Revit.DB.View view)
+            {
+                if (view.IsTemplate) return false;
+                foreach (var name in m_availableViews)
+                {
+                    if (view.ViewType.ToString() == name)
+                    {
+                        return true;
+                    }
+                }
+                return false;
+            }
+        }
+        private static Autodesk.Revit.DB.Solid GetSolid(GeometryElement geometryElement)
+        {
+            Autodesk.Revit.DB.Solid m_result = null;
+            foreach (var m_geoObj in geometryElement)
+            {
+                if (m_geoObj is Autodesk.Revit.DB.Solid m_solid && m_solid.Volume > 0)
+                {
+                    m_result = m_solid;
+                }
+                else if (m_geoObj is GeometryInstance geometryInstance)
+                {
+                    m_result = GetSolid(geometryInstance.GetInstanceGeometry());
+                }
+            }
+            return m_result;
+        }
     }
 }
